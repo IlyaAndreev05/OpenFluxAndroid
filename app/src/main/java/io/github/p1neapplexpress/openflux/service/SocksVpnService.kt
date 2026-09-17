@@ -2,6 +2,10 @@ package io.github.p1neapplexpress.openflux.service
 
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.IBinder
 import io.github.p1neapplexpress.openflux.IUnifiedService
 import io.github.p1neapplexpress.openflux.event.AppEvent
@@ -23,6 +27,8 @@ class SocksVpnService : android.net.VpnService() {
     private lateinit var notifications: VpnNotificationManager
 
     private var lastIntent: Intent? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var lastNetworkId: String? = null
 
     private val binder = object : IUnifiedService.Stub() {
         override fun isVpnRunning(): Boolean = vpn.isRunning.get()
@@ -84,6 +90,46 @@ class SocksVpnService : android.net.VpnService() {
         }
         tun2socks = Tun2SocksLauncher(applicationContext)
         notifications = VpnNotificationManager(this)
+        registerNetworkCallback()
+    }
+
+    // registerNetworkCallback следит за сменой default-сети (Wi-Fi <-> LTE).
+    // При переключении старые сокеты рвутся, поэтому форсим рестарт
+    // транспорта, чтобы не ждать 15+ секунд backoff'а внутри Go-ядра.
+    private fun registerNetworkCallback() {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val req = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                val id = network.toString()
+                if (lastNetworkId == null) {
+                    lastNetworkId = id
+                    Logx.d(TAG, "network available: $id")
+                    return
+                }
+                if (id != lastNetworkId) {
+                    Logx.i(TAG, "network changed: $lastNetworkId -> $id")
+                    lastNetworkId = id
+                    if (supervisor.isRunning) supervisor.forceRestart()
+                }
+            }
+
+            override fun onLost(network: Network) {
+                Logx.w(TAG, "network lost: $network")
+            }
+        }
+        runCatching { cm.registerNetworkCallback(req, cb) }
+            .onFailure { Logx.w(TAG, "registerNetworkCallback failed: ${it.message}") }
+        networkCallback = cb
+    }
+
+    private fun unregisterNetworkCallback() {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        networkCallback?.let { runCatching { cm.unregisterNetworkCallback(it) } }
+        networkCallback = null
+        lastNetworkId = null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -111,6 +157,7 @@ class SocksVpnService : android.net.VpnService() {
     }
 
     override fun onDestroy() {
+        unregisterNetworkCallback()
         stopEverything()
         super.onDestroy()
     }

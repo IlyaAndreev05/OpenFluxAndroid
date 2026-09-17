@@ -167,6 +167,11 @@
             style="@style/Widget.Material3.Button.OutlinedButton.Icon"
             android:layout_width="0dp"
             android:layout_height="52dp"
+            android:singleLine="true"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:gravity="center"
+            android:paddingHorizontal="12dp"
             android:layout_weight="1"
             android:text="@string/switch_tunnel"
             android:textAllCaps="false"
@@ -177,7 +182,9 @@
             app:strokeWidth="1dp"
             app:cornerRadius="14dp"
             app:icon="@drawable/ic_swap"
-            app:iconTint="@color/text_secondary" />
+            app:iconTint="@color/text_secondary"
+            app:iconGravity="textStart"
+            app:iconPadding="6dp" />
 
         <Space
             android:layout_width="12dp"
@@ -188,6 +195,11 @@
             style="@style/Widget.Material3.Button.OutlinedButton.Icon"
             android:layout_width="0dp"
             android:layout_height="52dp"
+            android:singleLine="true"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:gravity="center"
+            android:paddingHorizontal="12dp"
             android:layout_weight="1"
             android:text="@string/add_tunnel_short"
             android:textAllCaps="false"
@@ -198,7 +210,9 @@
             app:strokeWidth="1dp"
             app:cornerRadius="14dp"
             app:icon="@drawable/ic_add_qr"
-            app:iconTint="@color/text_secondary" />
+            app:iconTint="@color/text_secondary"
+            app:iconGravity="textStart"
+            app:iconPadding="6dp" />
 
     </LinearLayout>
 

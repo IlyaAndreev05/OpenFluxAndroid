@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the OpenFlux client binary (https://github.com/p1neappleXpress/OpenFlux)
+# Builds the OpenFlux client binary from the sibling IlyaAndreev05/OpenFlux checkout.
 # for every ABI the app ships and installs it as
 # jniLibs/<abi>/libp1npplydtransport.so.
 #
@@ -11,9 +11,10 @@
 
 set -euo pipefail
 
-SRC="${1:?usage: $0 /path/to/OpenFlux}"
-NDK="${ANDROID_NDK_HOME:?set ANDROID_NDK_HOME to an NDK r27+ install}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DEFAULT_SRC="$(cd "$SCRIPT_DIR/../../../.." && pwd)/OpenFlux"
+SRC="${1:-$DEFAULT_SRC}"
+NDK="${ANDROID_NDK_HOME:?set ANDROID_NDK_HOME to an NDK r27+ install}"
 OUT_DIR="$SCRIPT_DIR/jniLibs"
 API=26 # app minSdk
 

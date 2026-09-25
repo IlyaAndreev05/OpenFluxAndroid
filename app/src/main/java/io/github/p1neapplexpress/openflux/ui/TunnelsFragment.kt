@@ -10,17 +10,20 @@ import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.text.InputType
 import android.view.animation.AccelerateDecelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.LinearInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.ImageView
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.appcompat.app.AlertDialog
 import androidx.core.view.isVisible
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.Lifecycle
@@ -31,11 +34,15 @@ import io.github.g00fy2.quickie.ScanQRCode
 import io.github.p1neapplexpress.openflux.R
 import io.github.p1neapplexpress.openflux.data.Tunnel
 import io.github.p1neapplexpress.openflux.data.TunnelState
+import io.github.p1neapplexpress.openflux.data.SubscriptionImporter
+import io.github.p1neapplexpress.openflux.data.SubscriptionImportResult
 import io.github.p1neapplexpress.openflux.event.AppEvent
 import io.github.p1neapplexpress.openflux.ui.widget.AuroraView
 import io.github.p1neapplexpress.openflux.ui.widget.PulseRingsView
 import io.github.p1neapplexpress.openflux.util.toUptimeHms
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
 class TunnelsFragment : BaseFragment() {
@@ -80,15 +87,34 @@ class TunnelsFragment : BaseFragment() {
     private val qrScanner = registerForActivityResult(ScanQRCode()) { result ->
         val raw = (result as? QRResult.QRSuccess)?.content?.rawValue
             ?: return@registerForActivityResult
-        runCatching { qrJson.decodeFromString<Tunnel>(raw) }
-            .onSuccess { vm.addTunnel(it); requestVpnAndStart(it) }
-            .onFailure {
-                Toast.makeText(requireContext(), R.string.qr_scan_failed, Toast.LENGTH_LONG).show()
-            }
+        importProfile(raw, autoStart = true)
     }
 
-    // QR codes may come from newer app versions with fields this one doesn't know.
-    private val qrJson = Json { ignoreUnknownKeys = true }
+    private val jsonFilePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@registerForActivityResult
+        viewLifecycleOwner.lifecycleScope.launch {
+            val raw = withContext(Dispatchers.IO) {
+                runCatching {
+                    requireContext().contentResolver.openInputStream(uri)?.use { input ->
+                        val out = java.io.ByteArrayOutputStream()
+                        val buffer = ByteArray(16 * 1024)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            require(out.size() + count <= 1_048_576)
+                            out.write(buffer, 0, count)
+                        }
+                        out.toByteArray().toString(Charsets.UTF_8)
+                    } ?: error("Could not open file")
+                }.getOrNull()
+            }
+            if (raw == null) {
+                Toast.makeText(requireContext(), R.string.import_invalid, Toast.LENGTH_SHORT).show()
+            } else {
+                importProfile(raw, autoStart = false)
+            }
+        }
+    }
 
     override fun onCreateView(i: LayoutInflater, c: ViewGroup?, s: Bundle?) =
         i.inflate(R.layout.fragment_tunnels, c, false)
@@ -111,8 +137,12 @@ class TunnelsFragment : BaseFragment() {
 
         connectButton.setOnClickListener {
             it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-            // Stopping also cancels a start that is still waiting for the transport.
-            if (vm.active.value.isActive) vm.stop() else requestVpnAndStart()
+            if (vm.active.value.isActive) {
+                vm.stop()
+            } else {
+                val selected = vm.selected.value
+                if (selected?.mode == "transport") vm.startTunnel(selected) else requestVpnAndStart()
+            }
         }
 
         configSelector.setOnClickListener {
@@ -126,14 +156,71 @@ class TunnelsFragment : BaseFragment() {
                 .addToBackStack("switch")
                 .commit()
         }
-        view.findViewById<View>(R.id.addButton).setOnClickListener {
-            qrScanner.launch(null)
-        }
+        view.findViewById<View>(R.id.addButton).setOnClickListener { showImportOptions() }
 
         observe()
     }
 
+    private fun showImportOptions() {
+        androidx.appcompat.app.AlertDialog.Builder(requireContext())
+            .setTitle(R.string.import_options)
+            .setItems(arrayOf(getString(R.string.import_scan), getString(R.string.import_paste), getString(R.string.import_file))) { _, choice ->
+                when (choice) {
+                    0 -> qrScanner.launch(null)
+                    1 -> showPasteDialog()
+                    2 -> jsonFilePicker.launch(arrayOf("application/json", "text/plain", "*/*"))
+                }
+            }
+            .show()
+    }
+
+    private fun showPasteDialog() {
+        val input = EditText(requireContext()).apply {
+            hint = getString(R.string.import_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            minLines = 3
+            maxLines = 8
+        }
+        AlertDialog.Builder(requireContext())
+            .setTitle(R.string.import_paste)
+            .setView(input)
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.save) { _, _ -> importProfile(input.text.toString(), autoStart = false) }
+            .show()
+    }
+
+    private fun importProfile(raw: String, autoStart: Boolean) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val existing = vm.cachedTunnels()
+            val result = withContext(Dispatchers.IO) {
+                SubscriptionImporter(requireContext()).import(raw, existing)
+            }
+            when (result) {
+                is SubscriptionImportResult.Success -> {
+                    vm.saveImported(result.tunnels)
+                    Toast.makeText(requireContext(), R.string.import_ok, Toast.LENGTH_LONG).show()
+                    if (autoStart) {
+                        val profile = result.tunnels.first()
+                        if (profile.mode == "transport") vm.startTunnel(profile) else requestVpnAndStart(profile)
+                    }
+                }
+                SubscriptionImportResult.Revoked -> {
+                    vm.removeSubscription(raw.trim())
+                    Toast.makeText(requireContext(), R.string.import_revoked, Toast.LENGTH_LONG).show()
+                }
+                is SubscriptionImportResult.TemporaryFailure -> {
+                    Toast.makeText(requireContext(), result.message.ifBlank { getString(R.string.import_invalid) }, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
     private fun requestVpnAndStart(tunnel: Tunnel? = null) {
+        val selectedTunnel = tunnel ?: vm.selected.value
+        if (selectedTunnel?.mode == "transport") {
+            vm.startTunnel(selectedTunnel)
+            return
+        }
         val intent = VpnService.prepare(requireActivity())
         when {
             intent != null -> {
@@ -259,6 +346,7 @@ class TunnelsFragment : BaseFragment() {
             )
         }
 
+        menuView.findViewById<View>(R.id.menu_edit).isVisible = tunnel.poolConfigJson == null
         menuView.findViewById<View>(R.id.menu_edit).setOnClickListener {
             menu.dismiss()
             popup?.dismiss()
@@ -315,7 +403,12 @@ class TunnelsFragment : BaseFragment() {
 
         when (state) {
             is TunnelState.Idle -> {
-                statusText.text = getString(R.string.tap_to_connect)
+                val selected = vm.selected.value
+                statusText.text = when {
+                    selected?.cacheOffline == true -> getString(R.string.import_cached)
+                    selected?.subscriptionUrl != null -> getString(R.string.cache_status, selected.cacheUpdatedAt.orEmpty().take(19))
+                    else -> getString(R.string.tap_to_connect)
+                }
                 statusText.setTextColor(ContextCompat.getColor(requireContext(), R.color.text_primary))
                 crossFadeStatus()
                 aurora.setIntensity(0.4f)

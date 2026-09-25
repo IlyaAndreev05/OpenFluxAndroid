@@ -47,11 +47,25 @@ class NativeArgsTest {
     }
 
     @Test
-    fun `redact hides the max token`() {
+    fun `transport profile uses only loopback TCP ingress and pool file`() {
+        assertEquals(
+            listOf("--role", "client", "--inbound", "tcp", "--tcp-listen", "127.0.0.1:19100", "--pool-config", "/private/pool.json", "--transport", "yandex"),
+            NativeArgs.build(
+                listOf("--role=exit", "--openflux-mode=transport", "--pool-config-json=secret", "--tcp-target=bad", "--transport", "yandex"),
+                "127.0.0.1:4000", null,
+                inbound = "tcp", tcpListen = "127.0.0.1:19100", poolConfigPath = "/private/pool.json",
+            ),
+        )
+    }
+
+    @Test
+    fun `redact hides the max token and encoded pool config`() {
+
         assertEquals(
             listOf("--maxToken", "***", "--maxUid", "1"),
             NativeArgs.redact(listOf("--maxToken", "secret", "--maxUid", "1")),
         )
         assertEquals(listOf("--maxToken=***"), NativeArgs.redact(listOf("--maxToken=secret")))
+        assertEquals(listOf("--pool-config-json=***"), NativeArgs.redact(listOf("--pool-config-json=secret")))
     }
 }

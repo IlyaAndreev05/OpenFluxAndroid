@@ -80,4 +80,19 @@
     <string name="notify_msg_running">Туннель активен</string>
     <string name="notify_msg_error">Ошибка</string>
     <string name="notify_channel_desc">Статус VPN-сервиса</string>
+    <string name="local_transport_title">Локальный OpenFlux relay запущен</string>
+    <string name="local_transport_msg">Подключения Happ/Xray идут через loopback listener</string>
+    <string name="local_transport_channel">Локальный relay OpenFlux</string>
+    <string name="import_options">Импорт профиля OpenFlux</string>
+    <string name="import_scan">Сканировать QR-код</string>
+    <string name="import_paste">Вставить ссылку подписки или JSON</string>
+    <string name="import_file">Импортировать JSON-файл</string>
+    <string name="import_hint">Ссылка подписки OpenFlux или JSON-конфигурация</string>
+    <string name="import_ok">Профиль импортирован, устройство зарегистрировано</string>
+    <string name="import_cached">Не удалось обновить. Используется последняя проверенная копия.</string>
+    <string name="import_revoked">Подписка или устройство отозваны.</string>
+    <string name="import_invalid">Не удалось импортировать профиль.</string>
+    <string name="cache_status">Есть офлайн-копия · проверена: %1$s</string>
+    <string name="relay_stopped">Локальный relay остановлен</string>
+
 </resources>

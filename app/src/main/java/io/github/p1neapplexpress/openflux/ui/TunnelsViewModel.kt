@@ -9,14 +9,18 @@ import android.os.Build
 import android.os.IBinder
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.core.content.ContextCompat
 import io.github.p1neapplexpress.openflux.IUnifiedService
 import io.github.p1neapplexpress.openflux.data.Tunnel
 import io.github.p1neapplexpress.openflux.data.TunnelRepository
+import io.github.p1neapplexpress.openflux.data.SubscriptionImporter
+import io.github.p1neapplexpress.openflux.data.SubscriptionImportResult
 import io.github.p1neapplexpress.openflux.data.TunnelState
 import io.github.p1neapplexpress.openflux.data.TunnelViewType
 import io.github.p1neapplexpress.openflux.event.AppEvent
 import io.github.p1neapplexpress.openflux.event.EventBus
 import io.github.p1neapplexpress.openflux.service.SocksVpnService
+import io.github.p1neapplexpress.openflux.service.OpenFluxTransportService
 import io.github.p1neapplexpress.openflux.util.Logx
 import io.github.p1neapplexpress.openflux.vpn.VPNConfig
 import io.github.p1neapplexpress.openflux.vpn.VpnIntentFactory
@@ -29,6 +33,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -43,6 +48,7 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private val repo = TunnelRepository(app)
+    private val subscriptionImporter = SubscriptionImporter(app)
 
     @Volatile
     private var service: IUnifiedService? = null
@@ -94,9 +100,21 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         refresh()
+        refreshSubscriptions()
         viewModelScope.launch {
             EventBus.events.collect { ev ->
-                if (ev is AppEvent.NativeProcessExited && _active.value.isActive) fail(ev.message)
+                when (ev) {
+                    is AppEvent.NativeProcessExited -> if (_active.value.isActive) fail(ev.message)
+                    AppEvent.TransportConnected -> {
+                        val connecting = _active.value as? TunnelState.StartingTransport
+                        if (connecting?.tunnel?.mode == "transport") {
+                            _active.value = TunnelState.Running(connecting.tunnel)
+                            startUptimeCounter()
+                            refresh()
+                        }
+                    }
+                    else -> Unit
+                }
             }
         }
     }
@@ -110,6 +128,10 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun startTunnel(tunnel: Tunnel) {
+        if (tunnel.mode == "transport") {
+            startTransportRelay(tunnel)
+            return
+        }
         val running = _active.value
         if (running is TunnelState.Running && running.tunnel == tunnel) return
         if (running.isActive) stop()
@@ -177,6 +199,81 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun startTransportRelay(tunnel: Tunnel) {
+        val running = _active.value
+        if (running is TunnelState.Running && running.tunnel == tunnel) return
+        if (running.isActive) stop()
+        val pendingTeardown = teardownJob
+        repo.setSelectedId(tunnel.id)
+        _selected.value = tunnel
+        _active.value = TunnelState.Connecting(tunnel)
+        startJob = viewModelScope.launch {
+            pendingTeardown?.join()
+            activeTunnelData = tunnel
+            _active.value = TunnelState.StartingTransport(tunnel)
+            try {
+                val intent = Intent(getApplication<Application>(), OpenFluxTransportService::class.java).apply {
+                    action = OpenFluxTransportService.ACTION_START
+                    putStringArrayListExtra(OpenFluxTransportService.EXTRA_ARGS, ArrayList(tunnel.transportConnPayload))
+                    putExtra(OpenFluxTransportService.EXTRA_KEY, tunnel.encryptionKey)
+                }
+                ContextCompat.startForegroundService(getApplication(), intent)
+            } catch (e: Exception) {
+                fail("Local OpenFlux relay failed: ${e.message}")
+                return@launch
+            }
+            val deadline = System.currentTimeMillis() + TRANSPORT_TIMEOUT_MS
+            while (_active.value is TunnelState.StartingTransport && System.currentTimeMillis() < deadline) delay(POLL_MS)
+            if (_active.value is TunnelState.StartingTransport) fail("Local TCP relay did not start")
+        }
+    }
+
+    private fun refreshSubscriptions() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val original = repo.load()
+            val urls = original.mapNotNull { it.subscriptionUrl }.distinct()
+            if (urls.isEmpty()) return@launch
+            var updated = original
+            val revokedUrls = mutableSetOf<String>()
+            for (url in urls) {
+                val previous = updated.filter { it.subscriptionUrl == url }
+                when (val result = subscriptionImporter.refreshSubscription(url, previous)) {
+                    is SubscriptionImportResult.Success -> {
+                        updated = updated.filterNot { it.subscriptionUrl == url } + result.tunnels.map { it.copy(cacheOffline = false) }
+                    }
+                    SubscriptionImportResult.Revoked -> {
+                        updated = updated.filterNot { it.subscriptionUrl == url }
+                        revokedUrls += url
+                    }
+                    is SubscriptionImportResult.TemporaryFailure -> {
+                        updated = updated.map { if (it.subscriptionUrl == url) it.copy(cacheOffline = true) else it }
+                    }
+                }
+            }
+            if (updated != original) repo.save(updated)
+            withContext(Dispatchers.Main) {
+                val activeURL = _active.value.tunnel?.subscriptionUrl ?: activeTunnelData?.subscriptionUrl
+                if (activeURL != null && activeURL in revokedUrls) stop()
+                refresh()
+            }
+        }
+    }
+
+    fun cachedTunnels(): List<Tunnel> = repo.load()
+
+    fun removeSubscription(url: String) {
+        val current = repo.load()
+        repo.save(current.filterNot { it.subscriptionUrl == url })
+        refresh()
+    }
+
+    fun saveImported(tunnels: List<Tunnel>) {
+        val current = repo.load().associateBy { it.id }.toMutableMap()
+        tunnels.forEach { current[it.id] = it.copy(cacheOffline = false) }
+        repo.save(current.values.toList())
+        refresh()
+    }
+
     /** Polls [ready] until it holds; returns null on success or the error to show. */
     private suspend fun awaitService(
         timeoutMs: Long,
@@ -215,6 +312,10 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
         val previous = teardownJob
         teardownJob = CoroutineScope(Dispatchers.IO).launch {
             previous?.join()
+            val previousTunnel = activeTunnelData
+            if (previousTunnel?.mode == "transport") {
+                runCatching { getApplication<Application>().stopService(Intent(getApplication(), OpenFluxTransportService::class.java)) }
+            }
             if (bindRequested) {
                 // A cancelled start may still be binding; the service must be stopped anyway.
                 val s = awaitBinding()
@@ -308,6 +409,9 @@ class TunnelsViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         super.onCleared()
         startJob?.cancel()
+        if (activeTunnelData?.mode == "transport") {
+            runCatching { getApplication<Application>().stopService(Intent(getApplication(), OpenFluxTransportService::class.java)) }
+        }
         stopUptimeCounter()
         try { getApplication<Application>().unbindService(connection) } catch (_: Exception) {}
     }

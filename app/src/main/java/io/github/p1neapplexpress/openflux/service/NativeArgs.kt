@@ -4,15 +4,24 @@ package io.github.p1neapplexpress.openflux.service
 object NativeArgs {
 
     // Flags the app always sets itself; copies inside a stored payload are dropped.
-    private val OWNED_WITH_VALUE = setOf("role", "r", "inbound", "i", "socks5", "s", "encryption-key-file")
+    private val OWNED_WITH_VALUE = setOf("role", "r", "inbound", "i", "socks5", "s", "encryption-key-file", "pool-config", "tcp-listen", "tcp-target", "pool-config-json", "openflux-mode")
     private val OWNED_BOOLEAN = setOf("client", "exit-node", "tun", "socks5-mode")
 
-    private val SECRET_VALUES = setOf("maxToken")
+    private val SECRET_VALUES = setOf("maxToken", "pool-config-json", "client-key")
 
-    fun build(payload: List<String>, socksAddress: String, keyFile: String?): List<String> = buildList {
+    fun build(
+        payload: List<String>,
+        socksAddress: String,
+        keyFile: String?,
+        inbound: String = "socks5",
+        tcpListen: String? = null,
+        poolConfigPath: String? = null,
+    ): List<String> = buildList {
         add("--role"); add("client")
-        add("--inbound"); add("socks5")
-        add("--socks5"); add(socksAddress)
+        add("--inbound"); add(inbound)
+        if (inbound == "socks5") { add("--socks5"); add(socksAddress) }
+        if (inbound == "tcp" && tcpListen != null) { add("--tcp-listen"); add(tcpListen) }
+        if (poolConfigPath != null) { add("--pool-config"); add(poolConfigPath) }
         if (keyFile != null) {
             add("--encryption-key-file"); add(keyFile)
         }

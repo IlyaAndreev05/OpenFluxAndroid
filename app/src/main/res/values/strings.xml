@@ -77,4 +77,19 @@
     <string name="notify_msg_running">Tunnel is active</string>
     <string name="notify_msg_error">Error</string>
     <string name="notify_channel_desc">VPN service status</string>
+    <string name="local_transport_title">OpenFlux local relay running</string>
+    <string name="local_transport_msg">Happ/Xray connections use the loopback listener</string>
+    <string name="local_transport_channel">OpenFlux local relay</string>
+    <string name="import_options">Import OpenFlux profile</string>
+    <string name="import_scan">Scan QR code</string>
+    <string name="import_paste">Paste subscription URL or JSON</string>
+    <string name="import_file">Import JSON file</string>
+    <string name="import_hint">OpenFlux subscription URL or JSON configuration</string>
+    <string name="import_ok">Profile imported and device registered</string>
+    <string name="import_cached">Refresh failed. Using the last verified cached profile.</string>
+    <string name="import_revoked">This subscription or device has been revoked.</string>
+    <string name="import_invalid">Could not import this profile.</string>
+    <string name="cache_status">Offline copy ready · checked: %1$s</string>
+    <string name="relay_stopped">Local relay stopped</string>
+
 </resources>
